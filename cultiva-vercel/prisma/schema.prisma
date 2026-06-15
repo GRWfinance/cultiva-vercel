@@ -1,0 +1,834 @@
+// ============================================
+// SCHEMA - Qulture Clone (MVP: 1:1s, Feedbacks, Benefícios)
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// ============================================
+// CORE: Empresas, Usuários, Estrutura
+// ============================================
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  cnpj      String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users           User[]
+  departments     Department[]
+  benefits        Benefit[]
+  benefitBudgets  BenefitBudget[]
+  objectives      Objective[]
+  reviewCycles    ReviewCycle[]
+  surveys         Survey[]
+  courses         Course[]
+  ninebox         SuccessionEntry[]
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  name      String
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id])
+
+  users User[]
+  objectives Objective[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(EMPLOYEE)
+  jobTitle     String?
+  hireDate     DateTime?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  managerId    String?
+  manager      User?    @relation("ManagerEmployees", fields: [managerId], references: [id])
+  reports      User[]   @relation("ManagerEmployees")
+
+  // Relations - 1:1s
+  oneOnOnesAsEmployee OneOnOne[] @relation("EmployeeOneOnOnes")
+  oneOnOnesAsManager  OneOnOne[] @relation("ManagerOneOnOnes")
+  actionItemsOwned    ActionItem[]
+
+  // Relations - Feedbacks
+  feedbacksSent     Feedback[] @relation("FeedbackSender")
+  feedbacksReceived Feedback[] @relation("FeedbackReceiver")
+
+  // Relations - Kudos/Elogios
+  kudosSent     Kudos[] @relation("KudosSender")
+  kudosReceived Kudos[] @relation("KudosReceiver")
+
+  // Relations - Benefícios
+  benefitGrants BenefitGrant[]
+  benefitRequests BenefitRequest[]
+  benefitTransactions BenefitTransaction[]
+
+  // Relations - OKRs
+  ownedObjectives Objective[] @relation("ObjectiveOwner")
+  checkIns        KeyResultCheckIn[]
+
+  // Relations - PDI
+  pdis            PDI[] @relation("PDIOwner")
+  pdisAsManager   PDI[] @relation("PDIManager")
+
+  // Relations - Avaliação de Desempenho
+  reviewCyclesAsSubject ReviewParticipant[] @relation("ReviewSubject")
+  reviewsAsAuthor       Review[] @relation("ReviewAuthor")
+
+  // Relations - Pesquisas
+  surveyResponses SurveyResponse[]
+  surveysCreated  Survey[] @relation("SurveyCreator")
+
+  // Relations - Sucessão
+  successionAsEmployee SuccessionEntry[] @relation("SuccessionEmployee")
+  successorOf          SuccessionCandidate[]
+
+  // Relations - Learning
+  enrollments    Enrollment[]
+  coursesCreated Course[] @relation("CourseCreator")
+}
+
+enum UserRole {
+  ADMIN
+  HR
+  MANAGER
+  EMPLOYEE
+}
+
+// ============================================
+// MÓDULO: 1:1s
+// ============================================
+
+model OneOnOne {
+  id          String   @id @default(uuid())
+  scheduledAt DateTime
+  durationMin Int      @default(30)
+  status      OneOnOneStatus @default(SCHEDULED)
+  location    String?  // link de video ou sala
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employeeId  String
+  employee    User     @relation("EmployeeOneOnOnes", fields: [employeeId], references: [id])
+
+  managerId   String
+  manager     User     @relation("ManagerOneOnOnes", fields: [managerId], references: [id])
+
+  topics      OneOnOneTopic[]
+  actionItems ActionItem[]
+  notes       OneOnOneNote[]
+}
+
+enum OneOnOneStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  RESCHEDULED
+}
+
+// Pauta colaborativa - itens adicionados antes da reunião
+model OneOnOneTopic {
+  id         String   @id @default(uuid())
+  title      String
+  description String?
+  addedBy    String   // userId de quem adicionou
+  isPrivate  Boolean  @default(false) // visível só pra quem criou até a reunião
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  oneOnOneId String
+  oneOnOne   OneOnOne @relation(fields: [oneOnOneId], references: [id], onDelete: Cascade)
+}
+
+// Notas da reunião (privadas do gestor ou compartilhadas)
+model OneOnOneNote {
+  id         String   @id @default(uuid())
+  content    String
+  isPrivate  Boolean  @default(false)
+  authorId   String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  oneOnOneId String
+  oneOnOne   OneOnOne @relation(fields: [oneOnOneId], references: [id], onDelete: Cascade)
+}
+
+// Action items / próximos passos
+model ActionItem {
+  id          String   @id @default(uuid())
+  description String
+  dueDate     DateTime?
+  status      ActionItemStatus @default(PENDING)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  oneOnOneId  String?
+  oneOnOne    OneOnOne? @relation(fields: [oneOnOneId], references: [id], onDelete: SetNull)
+
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id])
+}
+
+enum ActionItemStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+// ============================================
+// MÓDULO: Feedbacks
+// ============================================
+
+model Feedback {
+  id          String   @id @default(uuid())
+  content     String
+  type        FeedbackType
+  visibility  FeedbackVisibility @default(PRIVATE)
+  competencies String[] // ex: ["comunicação", "liderança"]
+  createdAt   DateTime @default(now())
+
+  senderId    String?  // null se anônimo
+  sender      User?    @relation("FeedbackSender", fields: [senderId], references: [id])
+
+  receiverId  String
+  receiver    User     @relation("FeedbackReceiver", fields: [receiverId], references: [id])
+
+  isAnonymous Boolean  @default(false)
+}
+
+enum FeedbackType {
+  POSITIVE
+  CONSTRUCTIVE
+  REQUEST  // pedido de feedback
+}
+
+enum FeedbackVisibility {
+  PRIVATE   // só remetente e destinatário
+  MANAGER   // visível ao gestor também
+  PUBLIC    // visível no mural
+}
+
+// ============================================
+// MÓDULO: Elogios / Kudos
+// ============================================
+
+model Kudos {
+  id        String   @id @default(uuid())
+  message   String
+  values    String[] // valores da empresa relacionados (ex: "colaboração")
+  createdAt DateTime @default(now())
+
+  senderId   String
+  sender     User    @relation("KudosSender", fields: [senderId], references: [id])
+
+  receiverId String
+  receiver   User    @relation("KudosReceiver", fields: [receiverId], references: [id])
+
+  likes     Int      @default(0)
+}
+
+// ============================================
+// MÓDULO: Gerenciamento de Benefícios
+// ============================================
+
+// Catálogo de benefícios disponíveis na empresa
+model Benefit {
+  id            String   @id @default(uuid())
+  name          String   // ex: "Ticket Cultura", "Ticket Livro", "VR", "Gympass"
+  description   String?
+  type          BenefitType
+  provider      String?  // ex: "Caju", "Flash", "Alelo", "VR Benefícios"
+  defaultValue  Decimal  @db.Decimal(10,2) // valor padrão concedido
+  periodicity   BenefitPeriodicity @default(MONTHLY)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id])
+
+  eligibilityRules EligibilityRule[]
+  grants           BenefitGrant[]
+  budgets          BenefitBudget[]
+}
+
+enum BenefitType {
+  TICKET_CULTURA
+  TICKET_LIVRO
+  TICKET_ALIMENTACAO
+  TICKET_REFEICAO
+  PLANO_SAUDE
+  PLANO_ODONTO
+  GYMPASS
+  AUXILIO_HOME_OFFICE
+  AUXILIO_EDUCACAO
+  VALE_TRANSPORTE
+  OUTRO
+}
+
+enum BenefitPeriodicity {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  ONE_TIME
+}
+
+// Regras de elegibilidade (quem tem direito ao benefício)
+model EligibilityRule {
+  id          String   @id @default(uuid())
+  benefitId   String
+  benefit     Benefit  @relation(fields: [benefitId], references: [id], onDelete: Cascade)
+
+  // critérios (todos opcionais - se vazio, aplica a todos)
+  departmentId   String?  // restringe a um departamento
+  minTenureMonths Int?    // tempo mínimo de empresa em meses
+  jobTitlePattern String? // regex/padrão de cargo
+  role           UserRole? // restringe por papel (ex: só MANAGER+)
+
+  createdAt   DateTime @default(now())
+}
+
+// Concessão do benefício a um colaborador específico (saldo/wallet)
+model BenefitGrant {
+  id          String   @id @default(uuid())
+  value       Decimal  @db.Decimal(10,2) // valor concedido neste ciclo
+  balance     Decimal  @db.Decimal(10,2) // saldo restante
+  periodStart DateTime
+  periodEnd   DateTime
+  status      BenefitGrantStatus @default(ACTIVE)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  benefitId   String
+  benefit     Benefit  @relation(fields: [benefitId], references: [id])
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  transactions BenefitTransaction[]
+}
+
+enum BenefitGrantStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  CANCELLED
+}
+
+// Transações/usos do saldo do benefício
+model BenefitTransaction {
+  id          String   @id @default(uuid())
+  amount      Decimal  @db.Decimal(10,2)
+  type        TransactionType
+  description String?
+  createdAt   DateTime @default(now())
+
+  grantId     String
+  grant       BenefitGrant @relation(fields: [grantId], references: [id])
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+enum TransactionType {
+  CREDIT   // recarga/concessão
+  DEBIT    // uso/gasto
+  ADJUSTMENT // ajuste manual (RH)
+  EXPIRATION // saldo expirado
+}
+
+// Solicitações de benefícios (ex: pedido de novo benefício, alteração de plano)
+model BenefitRequest {
+  id          String   @id @default(uuid())
+  type        BenefitRequestType
+  description String
+  status      RequestStatus @default(PENDING)
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  reviewNote  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  benefitId   String?
+}
+
+enum BenefitRequestType {
+  NEW_BENEFIT       // solicitar adesão a um benefício
+  CHANGE_PLAN       // mudar plano (ex: saúde individual -> familiar)
+  CANCELLATION      // cancelar benefício
+  REIMBURSEMENT     // solicitar reembolso
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// Orçamento de benefícios por empresa/departamento (para People Analytics)
+model BenefitBudget {
+  id          String   @id @default(uuid())
+  year        Int
+  month       Int?     // null = orçamento anual
+  plannedAmount Decimal @db.Decimal(12,2)
+  spentAmount   Decimal @db.Decimal(12,2) @default(0)
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  benefitId   String?
+  benefit     Benefit? @relation(fields: [benefitId], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ============================================
+// MÓDULO: OKRs
+// ============================================
+
+model Objective {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  cycle       String   // ex: "2026-Q2"
+  scope       OKRScope @default(INDIVIDUAL)
+  status      ObjectiveStatus @default(ON_TRACK)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  ownerId     String
+  owner       User     @relation("ObjectiveOwner", fields: [ownerId], references: [id])
+
+  parentId    String?
+  parent      Objective? @relation("ObjectiveAlignment", fields: [parentId], references: [id])
+  children    Objective[] @relation("ObjectiveAlignment")
+
+  keyResults  KeyResult[]
+}
+
+enum OKRScope {
+  COMPANY
+  DEPARTMENT
+  INDIVIDUAL
+}
+
+enum ObjectiveStatus {
+  ON_TRACK
+  AT_RISK
+  OFF_TRACK
+  COMPLETED
+}
+
+model KeyResult {
+  id          String   @id @default(uuid())
+  title       String
+  metricType  KRMetricType @default(NUMBER)
+  startValue  Float    @default(0)
+  targetValue Float
+  currentValue Float   @default(0)
+  unit        String?  // ex: "%", "R$", "clientes"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  objectiveId String
+  objective   Objective @relation(fields: [objectiveId], references: [id], onDelete: Cascade)
+
+  checkIns    KeyResultCheckIn[]
+}
+
+enum KRMetricType {
+  NUMBER
+  PERCENTAGE
+  CURRENCY
+  BOOLEAN
+}
+
+model KeyResultCheckIn {
+  id          String   @id @default(uuid())
+  value       Float
+  confidence  Int?     // 0-100, "saúde" do KR
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  keyResultId String
+  keyResult   KeyResult @relation(fields: [keyResultId], references: [id], onDelete: Cascade)
+
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id])
+}
+
+// ============================================
+// MÓDULO: PDI (Plano de Desenvolvimento Individual)
+// ============================================
+
+model PDI {
+  id          String   @id @default(uuid())
+  title       String
+  cycle       String   // ex: "2026"
+  status      PDIStatus @default(IN_PROGRESS)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ownerId     String
+  owner       User     @relation("PDIOwner", fields: [ownerId], references: [id])
+
+  managerId   String?
+  manager     User?    @relation("PDIManager", fields: [managerId], references: [id])
+
+  goals       PDIGoal[]
+}
+
+enum PDIStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model PDIGoal {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  category    PDIGoalCategory @default(SKILL)
+  targetDate  DateTime?
+  status      ActionItemStatus @default(PENDING)
+  progress    Int      @default(0) // 0-100
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pdiId       String
+  pdi         PDI      @relation(fields: [pdiId], references: [id], onDelete: Cascade)
+}
+
+enum PDIGoalCategory {
+  SKILL
+  KNOWLEDGE
+  BEHAVIOR
+  CAREER
+  EXPERIENCE
+}
+
+// ============================================
+// MÓDULO: Avaliação de Desempenho
+// ============================================
+
+model ReviewCycle {
+  id          String   @id @default(uuid())
+  name        String   // ex: "Avaliação 2026 - Ciclo 1"
+  startDate   DateTime
+  endDate     DateTime
+  status      CycleStatus @default(DRAFT)
+  reviewTypes ReviewType[] // tipos habilitados neste ciclo
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  participants ReviewParticipant[]
+}
+
+enum CycleStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+enum ReviewType {
+  SELF
+  MANAGER
+  PEER
+  UPWARD
+}
+
+// Participante de um ciclo (quem está sendo avaliado)
+model ReviewParticipant {
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now())
+
+  cycleId     String
+  cycle       ReviewCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  subjectId   String
+  subject     User     @relation("ReviewSubject", fields: [subjectId], references: [id])
+
+  reviews     Review[]
+
+  overallScore Float?
+  completedAt DateTime?
+}
+
+// Uma avaliação individual (de um avaliador para um participante)
+model Review {
+  id          String   @id @default(uuid())
+  type        ReviewType
+  status      ReviewStatus @default(PENDING)
+  overallComment String?
+  submittedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  participantId String
+  participant   ReviewParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  authorId    String
+  author      User     @relation("ReviewAuthor", fields: [authorId], references: [id])
+
+  answers     ReviewAnswer[]
+}
+
+enum ReviewStatus {
+  PENDING
+  IN_PROGRESS
+  SUBMITTED
+}
+
+// Resposta a uma competência/pergunta específica
+model ReviewAnswer {
+  id          String   @id @default(uuid())
+  competency  String   // ex: "Comunicação", "Liderança", "Execução"
+  score       Int      // 1-5
+  comment     String?
+
+  reviewId    String
+  review      Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// MÓDULO: Pesquisas (Engajamento, eNPS, Pulse)
+// ============================================
+
+model Survey {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  type        SurveyType @default(PULSE)
+  status      SurveyStatus @default(DRAFT)
+  anonymous   Boolean  @default(true)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  creatorId   String
+  creator     User     @relation("SurveyCreator", fields: [creatorId], references: [id])
+
+  questions   SurveyQuestion[]
+  responses   SurveyResponse[]
+}
+
+enum SurveyType {
+  ENGAGEMENT
+  ENPS
+  PULSE
+  CLIMATE
+  CUSTOM
+}
+
+enum SurveyStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+model SurveyQuestion {
+  id          String   @id @default(uuid())
+  text        String
+  type        QuestionType @default(SCALE)
+  order       Int      @default(0)
+
+  surveyId    String
+  survey      Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  answers     SurveyAnswer[]
+}
+
+enum QuestionType {
+  SCALE     // 0-10 (eNPS) ou 1-5
+  TEXT
+  MULTIPLE_CHOICE
+}
+
+// Uma resposta = um envio completo de um colaborador (pode ser anônimo)
+model SurveyResponse {
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now())
+
+  surveyId    String
+  survey      Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  userId      String?  // null se anônimo
+  user        User?    @relation(fields: [userId], references: [id])
+
+  answers     SurveyAnswer[]
+}
+
+model SurveyAnswer {
+  id          String   @id @default(uuid())
+  value       String   // armazenado como string; numérico para SCALE, texto para TEXT
+
+  questionId  String
+  question    SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  responseId  String
+  response    SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// MÓDULO: Sucessão (Matriz 9-box)
+// ============================================
+
+model SuccessionEntry {
+  id          String   @id @default(uuid())
+  cycle       String   // ex: "2026"
+  performance Int      // 1-3 (eixo X da matriz 9-box)
+  potential   Int      // 1-3 (eixo Y da matriz 9-box)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  employeeId  String
+  employee    User     @relation("SuccessionEmployee", fields: [employeeId], references: [id])
+
+  candidates  SuccessionCandidate[] // posições críticas para as quais este funcionário é sucessor
+}
+
+// Posição crítica e seus possíveis sucessores
+model SuccessionCandidate {
+  id          String   @id @default(uuid())
+  positionTitle String  // ex: "Diretor de Produto"
+  readiness   ReadinessLevel @default(DEVELOPING)
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  successionEntryId String
+  successionEntry   SuccessionEntry @relation(fields: [successionEntryId], references: [id], onDelete: Cascade)
+
+  candidateId String
+  candidate   User     @relation(fields: [candidateId], references: [id])
+}
+
+enum ReadinessLevel {
+  READY_NOW
+  READY_1_2_YEARS
+  DEVELOPING
+}
+
+// ============================================
+// MÓDULO: Learning.Rocks (Trilhas/Cursos)
+// ============================================
+
+model Course {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  category    String?
+  durationMin Int?
+  level       CourseLevel @default(BEGINNER)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+
+  creatorId   String?
+  creator     User?    @relation("CourseCreator", fields: [creatorId], references: [id])
+
+  modules     CourseModule[]
+  enrollments Enrollment[]
+}
+
+enum CourseLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+model CourseModule {
+  id          String   @id @default(uuid())
+  title       String
+  order       Int      @default(0)
+  durationMin Int?
+
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  completions ModuleCompletion[]
+}
+
+model Enrollment {
+  id          String   @id @default(uuid())
+  status      EnrollmentStatus @default(IN_PROGRESS)
+  progress    Int      @default(0) // 0-100
+  enrolledAt  DateTime @default(now())
+  completedAt DateTime?
+
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id])
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  moduleCompletions ModuleCompletion[]
+
+  @@unique([courseId, userId])
+}
+
+enum EnrollmentStatus {
+  IN_PROGRESS
+  COMPLETED
+  NOT_STARTED
+}
+
+model ModuleCompletion {
+  id           String   @id @default(uuid())
+  completedAt  DateTime @default(now())
+
+  moduleId     String
+  module       CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  enrollmentId String
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, enrollmentId])
+}
